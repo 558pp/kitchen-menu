@@ -52,7 +52,9 @@ body{font-family:"PingFang SC","Microsoft YaHei",-apple-system,sans-serif;backgr
 @media(max-width:480px){.menu-grid{grid-template-columns:1fr}}
 
 /* Card */
-.card{background:var(--card);border-radius:var(--radius);padding:18px;box-shadow:var(--shadow);transition:all .25s;position:relative;overflow:hidden;border:1px solid transparent}
+.card{background:var(--card);border-radius:var(--radius);padding:18px;box-shadow:var(--shadow);transition:all .25s;position:relative;overflow:hidden;border:1px solid transparent;cursor:default}
+.card.dragging{opacity:.4;transform:scale(.96);box-shadow:0 2px 8px rgba(0,0,0,.08)}
+.card.drag-over{border-color:var(--red);border-style:dashed;box-shadow:0 0 0 2px rgba(232,83,46,.2)}
 .card:hover{border-color:var(--red-light);box-shadow:var(--shadow-hover)}
 .card.rated{border-left:4px solid var(--gold)}
 .card.new{border-left:4px solid var(--blue)}
@@ -87,6 +89,12 @@ body{font-family:"PingFang SC","Microsoft YaHei",-apple-system,sans-serif;backgr
 .card-actions button{font-size:11px;padding:4px 10px;border-radius:12px;border:1px solid var(--border);background:var(--card);color:var(--text-light);cursor:pointer;font-family:inherit;transition:.2s}
 .card-actions button:hover{background:var(--red);color:#fff;border-color:var(--red)}
 .card-actions button.danger:hover{background:#e74c3c}
+
+/* Drag handle */
+.drag-handle{position:absolute;top:10px;right:12px;cursor:grab;user-select:none;font-size:18px;color:#ccc;z-index:5;padding:4px 8px;border-radius:6px;transition:.2s;line-height:1;touch-action:none}
+.drag-handle:hover{color:var(--text-light);background:var(--border)}
+.drag-handle:active{cursor:grabbing}
+.card.dragging .drag-handle{cursor:grabbing;color:var(--red)}
 
 /* Add Button */
 .add-fab{position:fixed;bottom:24px;right:24px;width:56px;height:56px;border-radius:50%;background:var(--red);color:#fff;font-size:28px;border:0;box-shadow:0 4px 16px rgba(232,83,46,.4);cursor:pointer;z-index:20;transition:.25s;display:flex;align-items:center;justify-content:center}
@@ -159,6 +167,7 @@ body{font-family:"PingFang SC","Microsoft YaHei",-apple-system,sans-serif;backgr
     <input type="text" id="searchInput" placeholder="搜索菜名…" oninput="filterAndRender()">
   </div>
   <button class="sort-btn" id="sortBtn" onclick="toggleSort()">⭐ 评分排序</button>
+  <button class="sort-btn" id="customSortBtn" onclick="toggleCustomSort()" style="border-style:solid;border-color:var(--border);background:var(--red);color:#fff;font-weight:600">🖐 自由排序</button>
 </div>
 
 <div class="filter-tabs" id="filterTabs">
@@ -383,7 +392,7 @@ function updateStats(){
   }else{document.getElementById("sAvg").textContent="—";document.getElementById("sTop").textContent="—"}
 }
 
-function renderCard(d){
+function renderCard(d, idx){
   const stars=d.stars||0,isDone=d.tags&&d.tags.includes("done"),hasNote=!!d.note;
   let s="";for(let i=1;i<=5;i++)s+=`<span class="${i<=stars?'active':''}" data-s="${i}">★</span>`;
   const spice=d.spice?`<span class="badge badge-spice">${d.spice}</span>`:"";
@@ -395,7 +404,8 @@ function renderCard(d){
   const ratingText=stars>0?`小易：${'⭐'.repeat(stars)}`:"小易还没打分～";
   const ratedClass=(stars>0?" rated":"");
 
-  return `<div class="card${ratedClass}" data-id="${d.id}">
+  return `<div class="card${ratedClass}" data-id="${d.id}" data-idx="${idx}" draggable="true">
+    <span class="drag-handle" title="拖拽排序">⠿</span>
     <div class="card-header">
       <div class="card-icon">${ICONS[d.cat]||'🍽️'}</div>
       <div class="card-body">
@@ -419,7 +429,143 @@ function render(list){
   const grid=document.getElementById("menuGrid");
   if(!list.length){
     grid.innerHTML=`<div class="empty"><div class="icon">🍳</div><p>还没有菜品</p><p style="font-size:12px">快去厨房大显身手吧！</p></div>`;
-  }else{grid.innerHTML=list.map(renderCard).join("")}
+  }else{grid.innerHTML=list.map((d,i)=>renderCard(d,i)).join("");bindDragEvents()}
+}
+
+// ========== DRAG & DROP ==========
+let dragSrcId=null, dragSrcIdx=null, isCustomSort=true;
+
+function toggleCustomSort(){
+  isCustomSort=true;
+  sortBy="default";
+  document.getElementById("sortBtn").classList.remove("active");
+  document.getElementById("sortBtn").textContent="⭐ 评分排序";
+  const cb=document.getElementById("customSortBtn");
+  cb.style.background="var(--red)";cb.style.color="#fff";cb.style.fontWeight="600";
+  toast("🖐 自由排序模式：拽卡片右边的⠿手柄");
+  // reset filter to all for intuitive drag
+  if(filter!=="all"){filter="all";document.querySelectorAll(".filter-tab").forEach((b,i)=>b.classList.toggle("active",i===0))}
+  filterAndRender();
+}
+
+function bindDragEvents(){
+  const cards=document.querySelectorAll(".card");
+  cards.forEach(card=>{
+    card.addEventListener("dragstart",onDragStart);
+    card.addEventListener("dragover",onDragOver);
+    card.addEventListener("dragleave",onDragLeave);
+    card.addEventListener("drop",onDrop);
+    card.addEventListener("dragend",onDragEnd);
+    // Touch support on drag handle
+    const handle=card.querySelector(".drag-handle");
+    if(handle){handle.addEventListener("touchstart",onTouchStart,{passive:false});handle.addEventListener("touchmove",onTouchMove,{passive:false});handle.addEventListener("touchend",onTouchEnd)}
+  });
+}
+
+function onDragStart(e){
+  if(e.target.closest("button")||e.target.closest(".stars")){e.preventDefault();return}
+  dragSrcId=this.dataset.id;
+  dragSrcIdx=parseInt(this.dataset.idx);
+  this.classList.add("dragging");
+  e.dataTransfer.effectAllowed="move";
+  e.dataTransfer.setData("text/plain",dragSrcId);
+  setTimeout(()=>{if(this.classList.contains("dragging"))this.style.opacity="0.4"},0);
+}
+
+function onDragOver(e){
+  e.preventDefault();
+  e.dataTransfer.dropEffect="move";
+  if(this.dataset.id===dragSrcId)return;
+  this.classList.add("drag-over");
+}
+
+function onDragLeave(e){this.classList.remove("drag-over")}
+
+function onDrop(e){
+  e.preventDefault();
+  this.classList.remove("drag-over");
+  const targetId=this.dataset.id;
+  if(!dragSrcId||dragSrcId===targetId)return;
+  // Reorder dishes array
+  const fromIdx=dishes.findIndex(d=>d.id===dragSrcId);
+  const toIdx=dishes.findIndex(d=>d.id===targetId);
+  if(fromIdx<0||toIdx<0)return;
+  const [moved]=dishes.splice(fromIdx,1);
+  dishes.splice(toIdx,0,moved);
+  save();
+  // Exit stars sort if active
+  if(sortBy==="stars"){sortBy="default";document.getElementById("sortBtn").classList.remove("active");document.getElementById("sortBtn").textContent="⭐ 评分排序"}
+  isCustomSort=true;
+  filterAndRender();
+  updateStats();
+}
+
+function onDragEnd(e){
+  this.classList.remove("dragging");
+  this.style.opacity="";
+  document.querySelectorAll(".card.drag-over").forEach(c=>c.classList.remove("drag-over"));
+  dragSrcId=null;dragSrcIdx=null;
+}
+
+// Touch-based drag
+let touchClone=null,touchStartY=0,touchCard=null;
+function onTouchStart(e){
+  e.preventDefault();
+  const card=e.target.closest(".card");
+  if(!card)return;
+  touchCard=card;
+  dragSrcId=card.dataset.id;
+  dragSrcIdx=parseInt(card.dataset.idx);
+  touchStartY=e.touches[0].clientY;
+  card.classList.add("dragging");
+  // Create clone
+  touchClone=card.cloneNode(true);
+  touchClone.style.position="fixed";
+  touchClone.style.zIndex="100";
+  touchClone.style.width=card.offsetWidth+"px";
+  touchClone.style.opacity="0.85";
+  touchClone.style.transform="rotate(2deg)";
+  touchClone.style.pointerEvents="none";
+  touchClone.style.left=e.touches[0].clientX-card.offsetWidth/2+"px";
+  touchClone.style.top=(e.touches[0].clientY-30)+"px";
+  document.body.appendChild(touchClone);
+}
+
+function onTouchMove(e){
+  e.preventDefault();
+  if(!touchClone){touchClone?.remove();touchClone=null;return}
+  touchClone.style.left=(e.touches[0].clientX-touchClone.offsetWidth/2)+"px";
+  touchClone.style.top=(e.touches[0].clientY-30)+"px";
+  // Highlight target
+  document.querySelectorAll(".card").forEach(c=>c.classList.remove("drag-over"));
+  const el=document.elementFromPoint(e.touches[0].clientX,e.touches[0].clientY);
+  const target=el?.closest(".card");
+  if(target&&target.dataset.id!==dragSrcId)target.classList.add("drag-over");
+}
+
+function onTouchEnd(e){
+  e.preventDefault();
+  if(touchClone){touchClone.remove();touchClone=null}
+  if(!touchCard){return}
+  touchCard.classList.remove("dragging");
+  document.querySelectorAll(".card.drag-over").forEach(c=>c.classList.remove("drag-over"));
+  // Find target
+  const el=document.elementFromPoint(e.changedTouches[0].clientX,e.changedTouches[0].clientY);
+  const target=el?.closest(".card");
+  if(target&&target.dataset.id!==dragSrcId){
+    const fromIdx=dishes.findIndex(d=>d.id===dragSrcId);
+    const toIdx=dishes.findIndex(d=>d.id===target.dataset.id);
+    if(fromIdx>=0&&toIdx>=0){
+      const [moved]=dishes.splice(fromIdx,1);
+      dishes.splice(toIdx,0,moved);
+      save();
+      if(sortBy==="stars"){sortBy="default";document.getElementById("sortBtn").classList.remove("active");document.getElementById("sortBtn").textContent="⭐ 评分排序"}
+      isCustomSort=true;
+      filterAndRender();
+      updateStats();
+    }
+  }
+  dragSrcId=null;dragSrcIdx=null;touchCard=null;
 }
 
 function updateStatsDebounced(){updateStats();filterAndRender()}
